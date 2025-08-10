@@ -1,0 +1,138 @@
+name: Docs workflow
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 15 * * 6'
+permissions:
+  contents: read
+
+jobs:
+  create:
+    if: github.event.repository.fork == false
+    permissions:
+      contents: none
+    name: Create
+    runs-on: ${{ matrix.operating-system }}
+    strategy:
+      fail-fast: false
+      matrix:
+        operating-system: [ubuntu-24.04, ubuntu-22.04, windows-2022, macos-13]
+        php-versions: ['5.3', '5.4', '5.5', '5.6', '7.0', '7.1', '7.2', '7.3', '7.4', '8.0', '8.1', '8.2', '8.3', '8.4', '8.5']
+    steps:
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php-versions }}
+          tools: none
+      - name: Create file with all extensions for Linux and macOS
+        env:
+          file: php${{ matrix.php-versions }}-${{ matrix.operating-system }}.md
+          version: ${{ matrix.php-versions }}
+        if: matrix.operating-system != 'windows-2022'
+        run: |
+          php -m >> "$file.all"
+      - name: Create file with all extensions for Windows
+        env:
+          file: php${{ matrix.php-versions }}-${{ matrix.operating-system }}.md
+          version: ${{ matrix.php-versions }}
+        if: matrix.operating-system == 'windows-2022'
+        run: |
+          php -m | Out-File -FilePath "$env:file.all" -Append
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php-versions }}
+          extensions: none
+          tools: none
+      - name: Create final file for Linux and macOS
+        env:
+          file: php${{ matrix.php-versions }}-${{ matrix.operating-system }}.md
+          version: ${{ matrix.php-versions }}
+        if: matrix.operating-system != 'windows-2022'
+        run: |
+          echo "## PHP $version" >> "$file"
+          printf "\n" >> "$file"
+          echo "\`\`\`" >> "$file"
+          php -m >> "$file.builtin"
+          while IFS= read -r line; do
+            if [[ $line == [* || -z "${line// }" ]]; then
+              echo "$line" >> "$file"
+            elif grep -q "^$line" "$file.builtin"; then
+              echo "$line (builtin)" >> "$file"
+            else
+              echo "$line (shared)" >> "$file"
+            fi
+          done < "$file.all"
+          echo "\`\`\`" >> "$file"
+          printf "\n" >> "$file"
+          rm "$file.all" "$file.builtin"
+      - name: Create final file for Windows
+        env:
+          file: php${{ matrix.php-versions }}-${{ matrix.operating-system }}.md
+          version: ${{ matrix.php-versions }}
+        if: matrix.operating-system == 'windows-2022'
+        run: |
+          Write-Output "## PHP ${{ matrix.php-versions }}`n" | Out-File -FilePath "$env:file"
+          Write-Output "``````" | Out-File -FilePath "$env:file" -Append
+          php -m | Out-File -FilePath "$env:file.builtin" -Append
+          Get-Content "$env:file.all" | ForEach-Object {
+              if ($_.startsWith('[') -or -not $_.trim()) {
+                Write-Output "$_" | Out-File -FilePath "$env:file" -Append
+              } elseif ($_ -in (Get-Content "$env:file.builtin")) {
+                Write-Output "$_ (builtin)" | Out-File -FilePath "$env:file" -Append
+              } else {
+                Write-Output "$_ (shared)" | Out-File -FilePath "$env:file" -Append
+              }
+          }
+          Write-Output "```````n" | Out-File -FilePath "$env:file" -Append
+          Remove-Item "$env:file.all" -Force
+          Remove-Item "$env:file.builtin" -Force
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: lists-php${{ matrix.php-versions }}-${{ matrix.operating-system }}.md
+          path: php${{ matrix.php-versions }}-${{ matrix.operating-system }}.md
+  update:
+    if: github.event.repository.fork == false
+    permissions:
+      contents: write  # for Git to git push
+    name: Update
+    needs: create
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository }}.wiki
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: ${{ github.workspace }}/lists
+          pattern: lists-*
+          merge-multiple: true
+      - name: Configure Git
+        run : |
+          git config --local user.email "${{ secrets.email }}"
+          git config --local user.name "${{ github.repository_owner }}"
+      - name: Combine
+        run: |
+          for os in ubuntu-24.04 ubuntu-22.04 windows-2022 windows-2019 macos-13 macos-14 macos-15; do
+            echo "These are extensions which are loaded by default on the following PHP versions. More extensions which are available as packages and available on pecl are supported by setup-php. Refer to [php extension support](https://github.com/shivammathur/setup-php#heavy_plus_sign-php-extension-support) for more details." > Php-extensions-loaded-on-"$os".md
+            for version in 5.3 5.4 5.5 5.6 7.0 7.1 7.2 7.3 7.4 8.0 8.1 8.2 8.3 8.4 8.5; do
+              if [[ "${os%-*}" = "macos" ]]; then
+                cat lists/php"$version"-macos-13.md >> Php-extensions-loaded-on-"$os".md
+              elif [ "${os%-*}" = "windows" ]; then
+                cat lists/php"$version"-windows-2022.md >> Php-extensions-loaded-on-"$os".md
+              else
+                cat lists/php"$version"-"$os".md >> Php-extensions-loaded-on-"$os".md
+              fi
+            done
+          done
+          rm -rf ./lists
+      - name: Update
+        run: |
+          if [ "$(git status --porcelain=v1 2>/dev/null | wc -l)" != "0" ]; then
+            git add .
+            git commit -m "Update PHP extensions on wiki - $(date +'%d-%m-%y')"
+            git push -f https://${{ github.repository_owner }}:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.wiki.git master || true
+          fi

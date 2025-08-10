@@ -1,0 +1,63 @@
+name: Node workflow
+on:
+  pull_request:
+    branches:
+      - main
+      - develop
+      - verbose
+    paths-ignore:
+      - '**.md'
+      - 'examples/**'
+  push:
+    branches:
+      - main
+      - develop
+      - verbose
+    paths-ignore:
+      - '**.md'
+      - 'examples/**'
+permissions:
+  contents: read
+
+jobs:
+  run:
+    name: Run
+    runs-on: ${{ matrix.operating-system }}
+    strategy:
+      fail-fast: false
+      matrix:
+        operating-system: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Setup Node.js 20.x
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20.x
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Prettier Format Check
+        run: npm run format-check
+
+      - name: ESLint Check
+        run: npm run lint
+
+      - name: Run tests
+        run: npm test
+
+      - name: Run npm audit
+        run: npm audit
+
+      - name: Send Coverage
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: coverage/lcov.info
+          name: github-actions-codecov-${{ matrix.operating-system }}
+          fail_ci_if_error: false
+          verbose: true
